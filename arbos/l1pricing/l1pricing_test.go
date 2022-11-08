@@ -4,6 +4,7 @@
 package l1pricing
 
 import (
+	"math/big"
 	"testing"
 
 	am "github.com/offchainlabs/nitro/util/arbmath"
@@ -30,5 +31,60 @@ func TestL1PriceUpdate(t *testing.T) {
 	Require(t, err)
 	if priceEstimate.Cmp(initialPriceEstimate) != 0 {
 		Fail(t)
+	}
+}
+
+func TestL1Throttling(t *testing.T) {
+	sto := storage.NewMemoryBacked(burn.NewSystemBurner(nil, false))
+	err := InitializeL1PricingState(sto, common.Address{})
+	Require(t, err)
+	ps := OpenL1PricingState(sto)
+
+	l1Price, err := ps.PricePerUnit()
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+	l1Price, err = ps.adjustPricePerUnit(l1Price)
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+
+	Require(t, ps.SetL1DataUnitsSpeedLimit(1000))
+	Require(t, ps.SetL1DataUnitsThreshold(1000))
+	l1Price, err = ps.PricePerUnit()
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+	l1Price, err = ps.adjustPricePerUnit(l1Price)
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+
+	Require(t, ps.SetL1DataUnitsBacklog(5000))
+	l1Price, err = ps.PricePerUnit()
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+	l1Price, err = ps.adjustPricePerUnit(l1Price)
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+
+	Require(t, ps.SetL1DataUnitsBacklog(10000))
+	l1Price, err = ps.PricePerUnit()
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) != 0 {
+		t.Fatal()
+	}
+	l1Price, err = ps.adjustPricePerUnit(l1Price)
+	Require(t, err)
+	if l1Price.Cmp(big.NewInt(InitialPricePerUnitWei)) == 0 {
+		t.Fatal()
 	}
 }

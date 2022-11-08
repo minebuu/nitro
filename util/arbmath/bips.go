@@ -13,6 +13,10 @@ func NaturalToBips(natural int64) Bips {
 	return Bips(SaturatingMul(natural, int64(OneInBips)))
 }
 
+func UintRatioAsBips(num, denom uint64) Bips {
+	return SaturatingCastToBips(SaturatingUMul(num, uint64(OneInBips)) / denom)
+}
+
 func PercentToBips(percentage int64) Bips {
 	return Bips(SaturatingMul(percentage, 100))
 }

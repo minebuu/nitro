@@ -137,7 +137,7 @@ func init() {
 			return
 		}
 
-		posterCost, _ := state.L1PricingState().PosterDataCost(msg, l1pricing.BatchPosterAddress)
+		posterCost, _ := state.L1PricingState().PosterDataCost(msg, l1pricing.BatchPosterAddress, state.ArbOSVersion())
 		posterCostInL2Gas := arbmath.BigToUintSaturating(arbmath.BigDiv(posterCost, header.BaseFee))
 		*gascap = arbmath.SaturatingUAdd(*gascap, posterCostInL2Gas)
 	}

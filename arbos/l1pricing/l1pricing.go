@@ -39,12 +39,15 @@ type L1PricingState struct {
 	lastUpdateTime     storage.StorageBackedUint64 // timestamp of the last update from L1 that we processed
 	fundsDueForRewards storage.StorageBackedBigInt
 	// funds collected since update are recorded as the balance in account L1PricerFundsPoolAddress
-	unitsSinceUpdate     storage.StorageBackedUint64  // calldata units collected for since last update
-	pricePerUnit         storage.StorageBackedBigUint // current price per calldata unit
-	lastSurplus          storage.StorageBackedBigInt  // introduced in ArbOS version 2
-	perBatchGasCost      storage.StorageBackedInt64   // introduced in ArbOS version 3
-	amortizedCostCapBips storage.StorageBackedUint64  // in basis points; introduced in ArbOS version 3
-	l1FeesAvailable      storage.StorageBackedBigUint
+	unitsSinceUpdate      storage.StorageBackedUint64  // calldata units collected for since last update
+	pricePerUnit          storage.StorageBackedBigUint // current price per calldata unit
+	lastSurplus           storage.StorageBackedBigInt  // introduced in ArbOS version 2
+	perBatchGasCost       storage.StorageBackedInt64   // introduced in ArbOS version 3
+	amortizedCostCapBips  storage.StorageBackedUint64  // in basis points; introduced in ArbOS version 3
+	l1FeesAvailable       storage.StorageBackedBigUint
+	l1DataUnitsSpeedLimit storage.StorageBackedUint64
+	l1DataUnitsBacklog    storage.StorageBackedUint64
+	l1DataUnitsThreshold  storage.StorageBackedUint64
 }
 
 var (
@@ -52,6 +55,7 @@ var (
 	BatchPosterAddress       = common.HexToAddress("0xA4B000000000000000000073657175656e636572")
 	BatchPosterPayToAddress  = BatchPosterAddress
 	L1PricerFundsPoolAddress = common.HexToAddress("0xA4B00000000000000000000000000000000000f6")
+	l1BacklogBaseFee         = big.NewInt(100000000 * params.Wei) // 0.1 gwei
 
 	ErrInvalidTime = errors.New("invalid timestamp")
 )
@@ -69,6 +73,9 @@ const (
 	perBatchGasCostOffset
 	amortizedCostCapBipsOffset
 	l1FeesAvailableOffset
+	l1DataUnitsSpeedLimitOffset
+	l1DataUnitsBacklogOffset
+	l1DataUnitsThresholdOffset
 )
 
 const (
@@ -131,6 +138,9 @@ func OpenL1PricingState(sto *storage.Storage) *L1PricingState {
 		sto.OpenStorageBackedInt64(perBatchGasCostOffset),
 		sto.OpenStorageBackedUint64(amortizedCostCapBipsOffset),
 		sto.OpenStorageBackedBigUint(l1FeesAvailableOffset),
+		sto.OpenStorageBackedUint64(l1DataUnitsSpeedLimitOffset),
+		sto.OpenStorageBackedUint64(l1DataUnitsBacklogOffset),
+		sto.OpenStorageBackedUint64(l1DataUnitsThresholdOffset),
 	}
 }
 
@@ -206,7 +216,19 @@ func (ps *L1PricingState) SetLastSurplus(val *big.Int, arbosVersion uint64) erro
 	return ps.lastSurplus.SetSaturatingWithWarning(val, "L1 pricer last surplus")
 }
 
-func (ps *L1PricingState) AddToUnitsSinceUpdate(units uint64) error {
+func (ps *L1PricingState) AddToUnitsSinceUpdate(units uint64, arbosVersion uint64) error {
+	if arbosVersion >= 11 {
+		speedLimit, err := ps.L1DataUnitsSpeedLimit()
+		if err != nil {
+			return err
+		}
+		if speedLimit != 0 {
+			if err := ps.AddToL1DataUnitsBacklog(units); err != nil {
+				return err
+			}
+		}
+	}
+
 	oldUnits, err := ps.unitsSinceUpdate.Get()
 	if err != nil {
 		return err
@@ -280,6 +302,38 @@ func (ps *L1PricingState) TransferFromL1FeesAvailable(
 		return nil, err
 	}
 	return updated, nil
+}
+
+func (ps *L1PricingState) L1DataUnitsSpeedLimit() (uint64, error) {
+	return ps.l1DataUnitsSpeedLimit.Get()
+}
+
+func (ps *L1PricingState) SetL1DataUnitsSpeedLimit(val uint64) error {
+	return ps.l1DataUnitsSpeedLimit.Set(val)
+}
+
+func (ps *L1PricingState) L1DataUnitsBacklog() (uint64, error) {
+	return ps.l1DataUnitsBacklog.Get()
+}
+
+func (ps *L1PricingState) SetL1DataUnitsBacklog(val uint64) error {
+	return ps.l1DataUnitsBacklog.Set(val)
+}
+
+func (ps *L1PricingState) AddToL1DataUnitsBacklog(delta uint64) error {
+	backlog, err := ps.L1DataUnitsBacklog()
+	if err != nil {
+		return err
+	}
+	return ps.SetL1DataUnitsBacklog(am.SaturatingUAdd(backlog, delta))
+}
+
+func (ps *L1PricingState) L1DataUnitsThreshold() (uint64, error) {
+	return ps.l1DataUnitsThreshold.Get()
+}
+
+func (ps *L1PricingState) SetL1DataUnitsThreshold(val uint64) error {
+	return ps.l1DataUnitsThreshold.Set(val)
 }
 
 // UpdateForBatchPosterSpending updates the pricing model based on a payment by a batch poster
@@ -500,7 +554,7 @@ func (ps *L1PricingState) getPosterUnitsWithoutCache(tx *types.Transaction, post
 }
 
 // GetPosterInfo returns the poster cost and the calldata units for a transaction
-func (ps *L1PricingState) GetPosterInfo(tx *types.Transaction, poster common.Address) (*big.Int, uint64) {
+func (ps *L1PricingState) GetPosterInfo(tx *types.Transaction, poster common.Address, arbosVersion uint64) (*big.Int, uint64) {
 	if poster != BatchPosterAddress {
 		return common.Big0, 0
 	}
@@ -512,6 +566,9 @@ func (ps *L1PricingState) GetPosterInfo(tx *types.Transaction, poster common.Add
 
 	// Approximate the l1 fee charged for posting this tx's calldata
 	pricePerUnit, _ := ps.PricePerUnit()
+	if arbosVersion >= 11 {
+		pricePerUnit, _ = ps.adjustPricePerUnit(pricePerUnit)
+	}
 	return am.BigMulByUint(pricePerUnit, units), units
 }
 
@@ -561,10 +618,10 @@ func makeFakeTxForMessage(message core.Message) *types.Transaction {
 	})
 }
 
-func (ps *L1PricingState) PosterDataCost(message core.Message, poster common.Address) (*big.Int, uint64) {
+func (ps *L1PricingState) PosterDataCost(message core.Message, poster common.Address, arbosVersion uint64) (*big.Int, uint64) {
 	tx := message.UnderlyingTransaction()
 	if tx != nil {
-		return ps.GetPosterInfo(tx, poster)
+		return ps.GetPosterInfo(tx, poster, arbosVersion)
 	}
 
 	// Otherwise, we don't have an underlying transaction, so we're likely in gas estimation.
@@ -573,7 +630,37 @@ func (ps *L1PricingState) PosterDataCost(message core.Message, poster common.Add
 	units := ps.getPosterUnitsWithoutCache(tx, poster)
 	units = arbmath.UintMulByBips(units+estimationPaddingUnits, arbmath.OneInBips+estimationPaddingBasisPoints)
 	pricePerUnit, _ := ps.PricePerUnit()
+	if arbosVersion >= 11 {
+		pricePerUnit, _ = ps.adjustPricePerUnit(pricePerUnit)
+	}
 	return am.BigMulByUint(pricePerUnit, units), units
+}
+
+func (ps *L1PricingState) adjustPricePerUnit(basic *big.Int) (*big.Int, error) {
+	speedLimit, err := ps.L1DataUnitsSpeedLimit()
+	if err != nil {
+		return nil, err
+	}
+	if speedLimit == 0 {
+		return basic, nil
+	}
+	backlog, err := ps.L1DataUnitsBacklog()
+	if err != nil {
+		return nil, err
+	}
+	threshold, err := ps.L1DataUnitsThreshold()
+	if err != nil {
+		return nil, err
+	}
+	if threshold == 0 { // prevent divide-by-zero if misconfigured
+		return basic, nil
+	}
+	if backlog < threshold {
+		return basic, err
+	}
+	exponentBips := am.UintRatioAsBips(backlog, threshold)
+	backlogPrice := am.BigMulByBips(l1BacklogBaseFee, am.ApproxExpBasisPoints(am.Bips(exponentBips)))
+	return am.BigMax(backlogPrice, basic), nil
 }
 
 func byteCountAfterBrotli0(input []byte) (uint64, error) {
