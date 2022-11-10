@@ -148,6 +148,21 @@ func TestArbOwner(t *testing.T) {
 	if avail.Cmp(deposited) != 0 {
 		Fail(t, avail, deposited)
 	}
+
+	speedLimit, backlog, threshold, err := gasInfo.GetL1DataThrottleInfo(callCtx, evm)
+	Require(t, err)
+	if speedLimit != 0 || backlog != 0 || threshold != 0 {
+		Fail(t, speedLimit, backlog, threshold)
+	}
+	Require(t, prec.SetL1DataThrottleSpeedLimit(callCtx, evm, 3))
+	Require(t, prec.SetL1DataThrottleBacklog(callCtx, evm, 77))
+	Require(t, prec.SetL1DataThrottleThreshold(callCtx, evm, 9191))
+	speedLimit, backlog, threshold, err = gasInfo.GetL1DataThrottleInfo(callCtx, evm)
+	Require(t, err)
+	if speedLimit != 3 || backlog != 77 || threshold != 9191 {
+		Fail(t, speedLimit, backlog, threshold)
+	}
+
 }
 
 func TestArbInfraFeeAccount(t *testing.T) {

@@ -121,4 +121,14 @@ interface ArbGasInfo {
 
     /// @notice Returns the available funds from L1 fees
     function getL1FeesAvailable() external view returns (uint256);
+
+    /// @notice Returns L1 data throttling info (speed limit, backlog, threshold)
+    function getL1DataThrottleInfo()
+        external
+        view
+        returns (
+            uint64,
+            uint64,
+            uint64
+        );
 }

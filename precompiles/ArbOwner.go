@@ -156,3 +156,15 @@ func (con ArbOwner) ReleaseL1PricerSurplusFunds(c ctx, evm mech, maxWeiToRelease
 	}
 	return weiToTransfer, nil
 }
+
+func (con ArbOwner) SetL1DataThrottleSpeedLimit(c ctx, evm mech, unitsPerSecond uint64) error {
+	return c.State.L1PricingState().SetL1DataUnitsSpeedLimit(unitsPerSecond)
+}
+
+func (con ArbOwner) SetL1DataThrottleBacklog(c ctx, evm mech, units uint64) error {
+	return c.State.L1PricingState().SetL1DataUnitsBacklog(units)
+}
+
+func (con ArbOwner) SetL1DataThrottleThreshold(c ctx, evm mech, units uint64) error {
+	return c.State.L1PricingState().SetL1DataUnitsThreshold(units)
+}
